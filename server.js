@@ -57,7 +57,8 @@ app.post('/api/predict', upload.single('image'), async (req, res) => {
     const imageData = ctx.getImageData(0, 0, width, height);
 
     // Convert to tensor
-    const tensor = tf.browser.fromPixels(imageData);
+   const tensor = tf.node.fromPixels(imageData);
+
 
     // Predict
     const predictions = await model.predict(tensor);
