@@ -4,87 +4,84 @@ const multer = require('multer');
 const cors = require('cors');
 const tf = require('@tensorflow/tfjs-node');
 const tmImage = require('@teachablemachine/image');
+const { createCanvas, Image } = require('canvas');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configure multer for in-memory file upload
-const upload = multer({ storage: multer.memoryStorage() });
+// Multer config (upload to memory)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB max
+});
 
+// Load model
 let model;
-
-// Load the Teachable Machine model
 async function loadModel() {
   try {
     const modelUrl = process.env.MODEL_URL || 'https://teachablemachine.withgoogle.com/models/rtPCnZfSI/';
     model = await tmImage.load(`${modelUrl}model.json`, `${modelUrl}metadata.json`);
-    console.log(' Model loaded successfully');
+    console.log('✅ Model loaded successfully');
   } catch (err) {
-    console.error(' Error loading model:', err);
+    console.error('❌ Error loading model:', err.message);
   }
 }
 loadModel();
 
-// Health check endpoint
+// Health check
 app.get('/', (req, res) => {
   res.status(200).json({ status: 'Alive', model: model ? 'Loaded' : 'Loading' });
 });
 
-// Prediction endpoint
+// Prediction route
 app.post('/api/predict', upload.single('image'), async (req, res) => {
+  console.log('📥 POST /api/predict received');
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No image uploaded' });
+  }
+
+  if (!model) {
+    return res.status(503).json({ error: 'Model not loaded yet' });
+  }
+
   try {
-    console.log(' POST /api/predict triggered');
+    // Resize image using canvas
+    const width = 224, height = 224; // TM input size
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    img.src = req.file.buffer;
+    ctx.drawImage(img, 0, 0, width, height);
+    const imageData = ctx.getImageData(0, 0, width, height);
 
-    if (!req.file) {
-      console.log('No image uploaded');
-      return res.status(400).json({ error: 'No image uploaded' });
-    }
+    // Convert to tensor
+    const tensor = tf.browser.fromPixels(imageData);
 
-    if (!model) {
-      console.log(' Model not loaded');
-      return res.status(503).json({ error: 'Model not loaded yet' });
-    }
+    // Predict
+    const predictions = await model.predict(tensor);
 
-    let image;
-    try {
-      image = tf.node.decodeImage(req.file.buffer);
-      console.log(' Image decoded');
-    } catch (decodeErr) {
-      console.error('❌ Failed to decode image:', decodeErr);
-      return res.status(400).json({ error: 'Invalid image format' });
-    }
+    const result = predictions.map(p => ({
+      className: p.className,
+      probability: p.probability.toFixed(4)
+    })).sort((a, b) => b.probability - a.probability);
 
-    try {
-      const predictions = await model.predict(image);
-      tf.dispose(image);
+    res.json({
+      success: true,
+      topPrediction: result[0],
+      allPredictions: result
+    });
 
-      const result = predictions
-        .map(p => ({
-          className: p.className,
-          probability: p.probability.toFixed(4)
-        }))
-        .sort((a, b) => b.probability - a.probability);
-
-      console.log(' Prediction done:', result[0]);
-
-      res.json({
-        success: true,
-        topPrediction: result[0],
-        allPredictions: result
-      });
-    } catch (predictErr) {
-      console.error(' Prediction error:', predictErr);
-      return res.status(500).json({ error: 'Failed during prediction' });
-    }
   } catch (err) {
-    console.error(' Unexpected error:', err);
-    return res.status(500).json({ error: err.message });
+    console.error('❌ Prediction error:', err.message);
+    console.error(err.stack);
+    res.status(500).json({ success: false, error: err.message, stack: err.stack });
   }
 });
 
-// Start the server
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(` Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
