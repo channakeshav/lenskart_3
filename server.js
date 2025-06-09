@@ -9,18 +9,20 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configure upload
+// Configure multer for in-memory file upload
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Load Teachable Machine model
 let model;
+
+// Load the Teachable Machine model
 async function loadModel() {
-  const modelUrl = process.env.MODEL_URL || 'https://teachablemachine.withgoogle.com/models/rtPCnZfSI/';
-  model = await tmImage.load(
-    `${modelUrl}model.json`,
-    `${modelUrl}metadata.json`
-  );
-  console.log(' Model loaded successfully');
+  try {
+    const modelUrl = process.env.MODEL_URL || 'https://teachablemachine.withgoogle.com/models/rtPCnZfSI/';
+    model = await tmImage.load(`${modelUrl}model.json`, `${modelUrl}metadata.json`);
+    console.log(' Model loaded successfully');
+  } catch (err) {
+    console.error(' Error loading model:', err);
+  }
 }
 loadModel();
 
@@ -32,38 +34,57 @@ app.get('/', (req, res) => {
 // Prediction endpoint
 app.post('/api/predict', upload.single('image'), async (req, res) => {
   try {
+    console.log(' POST /api/predict triggered');
+
     if (!req.file) {
+      console.log('No image uploaded');
       return res.status(400).json({ error: 'No image uploaded' });
     }
 
-    console.log('📸 Processing image...');
-    const image = tf.node.decodeImage(req.file.buffer);
-    const predictions = await model.predict(image);
-    tf.dispose(image); // Clean up TensorFlow memory
+    if (!model) {
+      console.log(' Model not loaded');
+      return res.status(503).json({ error: 'Model not loaded yet' });
+    }
 
-    // Format response
-    const result = predictions.map(p => ({
-      className: p.className,
-      probability: p.probability.toFixed(4)
-    })).sort((a, b) => b.probability - a.probability);
+    let image;
+    try {
+      image = tf.node.decodeImage(req.file.buffer);
+      console.log(' Image decoded');
+    } catch (decodeErr) {
+      console.error('❌ Failed to decode image:', decodeErr);
+      return res.status(400).json({ error: 'Invalid image format' });
+    }
 
-    res.json({
-      success: true,
-      topPrediction: result[0],
-      allPredictions: result
-    });
+    try {
+      const predictions = await model.predict(image);
+      tf.dispose(image);
 
-  } catch (error) {
-    console.error(' Prediction error:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
+      const result = predictions
+        .map(p => ({
+          className: p.className,
+          probability: p.probability.toFixed(4)
+        }))
+        .sort((a, b) => b.probability - a.probability);
+
+      console.log(' Prediction done:', result[0]);
+
+      res.json({
+        success: true,
+        topPrediction: result[0],
+        allPredictions: result
+      });
+    } catch (predictErr) {
+      console.error(' Prediction error:', predictErr);
+      return res.status(500).json({ error: 'Failed during prediction' });
+    }
+  } catch (err) {
+    console.error(' Unexpected error:', err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// Start server
+// Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(` API running on port ${PORT}`);
+  console.log(` Server running on port ${PORT}`);
 });
